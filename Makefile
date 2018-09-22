@@ -82,7 +82,7 @@ src-$(CONFIG_BLKFRONT) += blkfront.c
 src-$(CONFIG_TPMFRONT) += tpmfront.c
 src-$(CONFIG_TPM_TIS) += tpm_tis.c
 src-$(CONFIG_TPMBACK) += tpmback.c
-src-y += nnpfront.c
+
 src-y += nnpback.c
 src-y += daytime.c
 src-y += events.c
@@ -220,9 +220,6 @@ AVX_OBJS += NNPACK/build/src/x86_64-fma/relu.py.o
 AVX_OBJS += NNPACK/build/src/x86_64-fma/softmax.py.o
 AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/sdotxf.py.o
 AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/shdotxf.py.o
-
-NEWS_OBJS := squeezenet1_0.a
-NEWS_OBJS += resnet18.a
 
 $(OBJ_DIR)/$(TARGET): $(OBJS) $(APP_O) arch_lib
 	$(LD) -r $(LDFLAGS) $(HEAD_OBJ) $(APP_O) $(OBJS) $(LDARCHLIB) $(NEWS_OBJS) $(LDLIBS) -o $@.o
