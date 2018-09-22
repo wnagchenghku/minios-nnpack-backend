@@ -23,7 +23,7 @@
 #define NR_RESERVED_ENTRIES 8
 
 /* NR_GRANT_FRAMES must be less than or equal to that configured in Xen */
-#define NR_GRANT_FRAMES 24
+#define NR_GRANT_FRAMES 128
 #define NR_GRANT_ENTRIES (NR_GRANT_FRAMES * PAGE_SIZE / sizeof(grant_entry_t))
 
 static grant_entry_t *gnttab_table;
