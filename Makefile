@@ -115,25 +115,6 @@ src-y += console/xencons_ring.c
 src-$(CONFIG_CONSFRONT) += console/xenbus.c
 
 src-y += glue.c
-# NNPACK
-src-y += NNPACK/deps/pthreadpool/src/threadpool-pthreads.c
-src-y += NNPACK/src/init.c
-src-y += NNPACK/src/convolution-inference.c
-src-y += NNPACK/src/fully-connected-inference.c
-
-## NNPACK psimd
-src-y += NNPACK/src/psimd/2d-fourier-8x8.c
-src-y += NNPACK/src/psimd/2d-fourier-16x16.c
-src-y += NNPACK/src/psimd/2d-winograd-8x8-3x3.c
-src-y += NNPACK/src/psimd/blas/s4gemm.c
-src-y += NNPACK/src/psimd/blas/c4gemm-conjb.c
-src-y += NNPACK/src/psimd/blas/s4c2gemm-conjb.c
-src-y += NNPACK/src/psimd/blas/conv1x1.c
-src-y += NNPACK/src/psimd/blas/sgemm.c
-src-y += NNPACK/src/psimd/relu.c
-src-y += NNPACK/src/psimd/softmax.c
-src-y += NNPACK/src/psimd/blas/sdotxf.c
-src-y += NNPACK/src/psimd/blas/shdotxf.c
 
 # The common mini-os objects to build.
 APP_OBJS :=
@@ -206,20 +187,6 @@ $(OBJ_DIR)/$(TARGET)_app.o: $(APP_OBJS) app.lds
 ifneq ($(APP_OBJS),)
 APP_O=$(OBJ_DIR)/$(TARGET)_app.o 
 endif
-
-AVX_OBJS := NNPACK/build/src/x86_64-fma/2d-fourier-8x8.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/2d-fourier-16x16.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/2d-winograd-8x8-3x3.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/s8gemm.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/c8gemm.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/s4c6gemm.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/conv1x1.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/sgemm.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/max-pooling.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/relu.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/softmax.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/sdotxf.py.o
-AVX_OBJS += NNPACK/build/src/x86_64-fma/blas/shdotxf.py.o
 
 $(OBJ_DIR)/$(TARGET): $(OBJS) $(APP_O) arch_lib
 	$(LD) -r $(LDFLAGS) $(HEAD_OBJ) $(APP_O) $(OBJS) $(LDARCHLIB) $(NEWS_OBJS) $(LDLIBS) -o $@.o
