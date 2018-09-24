@@ -1,11 +1,20 @@
 #include <mini-os/console.h>
 #include <xen/memory.h>
 #include <arch_mm.h>
+#include <mini-os/errno.h>
 #include <mini-os/hypervisor.h>
 #include <libfdt.h>
 #include <lib.h>
 
 uint32_t physical_address_offset;
+struct e820entry e820_map[1] = {
+    {
+        .addr = 0,
+        .size = ULONG_MAX - 1,
+        .type = E820_RAM
+    }
+};
+unsigned e820_entries = 1;
 
 unsigned long allocate_ondemand(unsigned long n, unsigned long alignment)
 {
@@ -71,12 +80,15 @@ void arch_init_mm(unsigned long *start_pfn_p, unsigned long *max_pfn_p)
     *max_pfn_p = to_phys(new_device_tree) >> PAGE_SHIFT;
 }
 
-void arch_init_p2m(unsigned long max_pfn)
+void arch_init_demand_mapping_area(void)
 {
 }
 
-void arch_init_demand_mapping_area(unsigned long cur_pfn)
+int do_map_frames(unsigned long addr,
+        const unsigned long *f, unsigned long n, unsigned long stride,
+        unsigned long increment, domid_t id, int *err, unsigned long prot)
 {
+    return -ENOSYS;
 }
 
 /* Get Xen's suggested physical page assignments for the grant table. */
@@ -104,7 +116,7 @@ static paddr_t get_gnttab_base(void)
     return gnttab_base;
 }
 
-grant_entry_t *arch_init_gnttab(int nr_grant_frames)
+grant_entry_v1_t *arch_init_gnttab(int nr_grant_frames)
 {
     struct xen_add_to_physmap xatp;
     struct gnttab_setup_table setup;
@@ -136,4 +148,9 @@ grant_entry_t *arch_init_gnttab(int nr_grant_frames)
     }
 
     return to_virt(gnttab_table);
+}
+
+unsigned long map_frame_virt(unsigned long mfn)
+{
+    return mfn_to_virt(mfn);
 }

@@ -3,6 +3,8 @@
 # (including x86_32, x86_32y and x86_64).
 #
 
+MINIOS_TARGET_ARCHS := x86_32 x86_64
+
 ifeq ($(MINIOS_TARGET_ARCH),x86_32)
 ARCH_CFLAGS  := -m32 -march=i686
 ARCH_LDFLAGS := -m elf_i386
@@ -20,3 +22,7 @@ EXTRA_INC += $(TARGET_ARCH_FAM)/$(MINIOS_TARGET_ARCH)
 EXTRA_SRC += arch/$(EXTRA_INC)
 endif
 
+ifeq ($(CONFIG_PARAVIRT),n)
+ARCH_LDFLAGS_FINAL := --oformat=elf32-i386
+ARCH_AS_DEPS += x86_hvm.S
+endif

@@ -6,9 +6,6 @@
 TOPLEVEL_DIR = $(CURDIR)/../..
 include ../../Config.mk
 
-# include arch.mk has to be before mini-os.mk!
-
-include arch.mk
 include ../../minios.mk
 
 # Sources here are all *.c *.S without $(MINIOS_TARGET_ARCH).S
@@ -27,4 +24,5 @@ $(OBJ_DIR)/$(ARCH_LIB): $(ARCH_OBJS) $(OBJ_DIR)/$(HEAD_ARCH_OBJ)
 
 clean:
 	rm -f $(OBJ_DIR)/$(ARCH_LIB) $(ARCH_OBJS) $(OBJ_DIR)/$(HEAD_ARCH_OBJ)
+	rm -f minios-x86_32.lds minios-x86_64.lds
 

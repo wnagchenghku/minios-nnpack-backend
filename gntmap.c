@@ -37,9 +37,8 @@
 #include <xen/grant_table.h>
 #include <inttypes.h>
 #include <mini-os/gntmap.h>
-#include <mini-os/posix/sys/mman.h>
 
-#define GNTMAP_DEBUG
+//#define GNTMAP_DEBUG
 #ifdef GNTMAP_DEBUG
 #define DEBUG(_f, _a...) \
     printk("MINI_OS(gntmap.c:%d): %s" _f "\n", __LINE__, __func__, ## _a)
@@ -48,7 +47,7 @@
 #endif
 
 
-#define DEFAULT_MAX_GRANTS 20384
+#define DEFAULT_MAX_GRANTS 128
 
 struct gntmap_entry {
     unsigned long host_addr;
@@ -218,75 +217,6 @@ gntmap_map_grant_refs(struct gntmap *map,
             (void) gntmap_munmap(map, addr, i);
             return NULL;
         }
-    }
-
-    return (void*) addr;
-}
-
-void*
-gntmap_map_grant_refs_batch(struct gntmap *map, 
-                           uint32_t count,
-                           uint32_t *domids,
-                           int domids_stride,
-                           uint32_t *refs,
-                           int writable)
-{
-    unsigned long addr;
-    struct gntmap_entry *ent;
-    int i, rc;
-    struct gnttab_map_grant_ref *op;
-    struct timeval start, end;
-    unsigned long e_usec;
-
-    DEBUG("(map=%p, count=%" PRIu32 ", "
-           "domids=%p [%" PRIu32 "...], domids_stride=%d, "
-           "refs=%p [%" PRIu32 "...], writable=%d)",
-           map, count,
-           domids, domids == NULL ? 0 : domids[0], domids_stride,
-           refs, refs == NULL ? 0 : refs[0], writable);
-
-    (void) gntmap_set_max_grants(map, DEFAULT_MAX_GRANTS);
-
-    // addr = allocate_ondemand((unsigned long) count, 1);
-    addr = (unsigned long)mmap(NULL, count * PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANON, -1, 0);
-    if (addr == 0)
-        return NULL;
-
-    op = (struct gnttab_map_grant_ref *)malloc(sizeof(struct gnttab_map_grant_ref) * count);
-
-    for (i = 0; i < count; i++) {
-        ent = gntmap_find_free_entry(map);
-        if (ent == NULL)
-            return NULL;
-
-        op[i].ref = (grant_ref_t)refs[i];
-        op[i].dom = (domid_t)domids[i * domids_stride];
-        op[i].host_addr = (uint64_t) addr + PAGE_SIZE * i;
-        op[i].flags = GNTMAP_host_map;
-        if (!writable)
-            op[i].flags |= GNTMAP_readonly;
-
-        ent->host_addr = (uint64_t) addr + PAGE_SIZE * i;
-    }
-
-    gettimeofday(&start, 0);
-    rc = HYPERVISOR_grant_table_op(GNTTABOP_map_grant_ref, op, count);
-    gettimeofday(&end, 0);
-    e_usec = ((end.tv_sec * 1000000) + end.tv_usec) - ((start.tv_sec * 1000000) + start.tv_usec);
-    DEBUG("Fetching grant references takes %lu microseconds\n", e_usec);
-
-    for (i = 0; i < count; ++i) {
-        if (rc != 0 || op[i].status != GNTST_okay) {
-            printk("GNTTABOP_map_grant_ref failed: "
-                   "returned %d, status %" PRId16 "\n",
-                   rc, op[i].status);
-            return NULL;
-        }
-    }
-
-    for (i = 0; i < count; ++i) {
-        ent = gntmap_find_entry(map, op[i].host_addr);
-        ent->handle = op[i].handle;
     }
 
     return (void*) addr;

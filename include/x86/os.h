@@ -24,7 +24,14 @@
 #endif
 #include <xen/xen.h>
 
+#define MSR_EFER          0xc0000080
+#define _EFER_LME         8             /* Long mode enable */
 
+#define X86_CR0_PG        0x80000000    /* Paging */
+#define X86_CR4_PAE       0x00000020    /* enable physical address extensions */
+#define X86_CR4_OSFXSR    0x00000200    /* enable fast FPU save and restore */
+
+#define X86_EFLAGS_IF     0x00000200
 
 #define __KERNEL_CS  FLAT_KERNEL_CS
 #define __KERNEL_DS  FLAT_KERNEL_DS
@@ -51,6 +58,7 @@
 #define TRAP_machine_check    18
 #define TRAP_simd_error       19
 #define TRAP_deferred_nmi     31
+#define TRAP_xen_callback     32
 
 /* Everything below this point is not included by assembler (.S) files. */
 #ifndef __ASSEMBLY__
@@ -64,7 +72,7 @@ void arch_fini(void);
 
 
 
-
+#ifdef CONFIG_PARAVIRT
 
 /* 
  * The use of 'barrier' in the following reflects their use as local-lock
@@ -123,14 +131,69 @@ do {									\
 	barrier();							\
 } while (0)
 
+#define irqs_disabled()			\
+    HYPERVISOR_shared_info->vcpu_info[smp_processor_id()].evtchn_upcall_mask
+
+#else
+
+#if defined(__i386__)
+#define __SZ "l"
+#define __REG "e"
+#else
+#define __SZ "q"
+#define __REG "r"
+#endif
+
+#define __cli() asm volatile ( "cli" : : : "memory" )
+#define __sti() asm volatile ( "sti" : : : "memory" )
+
+#define __save_flags(x)                                                 \
+do {                                                                    \
+    unsigned long __f;                                                  \
+    asm volatile ( "pushf" __SZ " ; pop" __SZ " %0" : "=g" (__f));      \
+    x = (__f & X86_EFLAGS_IF) ? 1 : 0;                                  \
+} while (0)
+
+#define __restore_flags(x)                                              \
+do {                                                                    \
+    if (x) __sti();                                                     \
+    else __cli();                                                       \
+} while (0)
+
+#define __save_and_cli(x)                                               \
+do {                                                                    \
+    __save_flags(x);                                                    \
+    __cli();                                                            \
+} while (0)
+
+static inline int irqs_disabled(void)
+{
+    int flag;
+
+    __save_flags(flag);
+    return !flag;
+}
+
+#endif
+
+#ifdef __INSIDE_MINIOS__
 #define local_irq_save(x)	__save_and_cli(x)
 #define local_irq_restore(x)	__restore_flags(x)
 #define local_save_flags(x)	__save_flags(x)
 #define local_irq_disable()	__cli()
 #define local_irq_enable()	__sti()
-
-#define irqs_disabled()			\
-    HYPERVISOR_shared_info->vcpu_info[smp_processor_id()].evtchn_upcall_mask
+#else
+unsigned long __local_irq_save(void);
+void __local_irq_restore(unsigned long flags);
+unsigned long __local_save_flags(void);
+void __local_irq_disable(void);
+void __local_irq_enable(void);
+#define local_irq_save(x)       x = __local_irq_save()
+#define local_irq_restore(x)    __local_irq_restore(x)
+#define local_save_flags(x)     x = __local_save_flags()
+#define local_irq_disable()     __local_irq_disable()
+#define local_irq_enable()      __local_irq_enable()
+#endif
 
 /* This is a barrier for the compiler only, NOT the processor! */
 #define barrier() __asm__ __volatile__("": : :"memory")
@@ -156,6 +219,15 @@ do {									\
  */
 typedef struct { volatile int counter; } atomic_t;
 
+static inline void write_cr3(unsigned long cr3)
+{
+    asm volatile( "mov %0, %%cr3" : : "r" (cr3) : "memory" );
+}
+
+static inline void invlpg(unsigned long va)
+{
+    asm volatile ( "invlpg %0": : "m" (*(const char *)(va)) : "memory" );
+}
 
 /************************** i386 *******************************/
 #ifdef __INSIDE_MINIOS__
@@ -435,20 +507,28 @@ static __inline__ unsigned long __ffs(unsigned long word)
      (val) = ((unsigned long)__a) | (((unsigned long)__d)<<32); \
 } while(0)
 
+#else /* ifdef __x86_64__ */
+#error "Unsupported architecture"
+#endif
+
+/********************* common i386 and x86_64  ****************************/
+#define xen_mb()  mb()
+#define xen_rmb() rmb()
+#define xen_wmb() wmb()
+#define xen_barrier() asm volatile ( "" : : : "memory")
+
+#endif /* ifdef __INSIDE_MINIOS */
+
 #define wrmsr(msr,val1,val2) \
       __asm__ __volatile__("wrmsr" \
                            : /* no outputs */ \
                            : "c" (msr), "a" (val1), "d" (val2))
 
-#define wrmsrl(msr,val) wrmsr(msr,(uint32_t)((uint64_t)(val)),((uint64_t)(val))>>32)
+static inline void wrmsrl(unsigned msr, uint64_t val)
+{
+    wrmsr(msr, (uint32_t)(val & 0xffffffffULL), (uint32_t)(val >> 32));
+}
 
-
-#else /* ifdef __x86_64__ */
-#error "Unsupported architecture"
-#endif
-#endif /* ifdef __INSIDE_MINIOS */
-
-/********************* common i386 and x86_64  ****************************/
 struct __synch_xchg_dummy { unsigned long a[100]; };
 #define __synch_xg(x) ((struct __synch_xchg_dummy *)(x))
 
@@ -566,7 +646,31 @@ HYPERVISOR_xsm_op(
     return _hypercall1(int, xsm_op, op);
 }
 
+static inline void cpuid(uint32_t leaf,
+                         uint32_t *eax, uint32_t *ebx,
+                         uint32_t *ecx, uint32_t *edx)
+{
+    asm volatile ("cpuid"
+                  : "=a" (*eax), "=b" (*ebx), "=c" (*ecx), "=d" (*edx)
+                  : "0" (leaf));
+}
+
 #undef ADDR
+
+#ifdef CONFIG_PARAVIRT
+static inline unsigned long read_cr2(void)
+{
+    return HYPERVISOR_shared_info->vcpu_info[smp_processor_id()].arch.cr2;
+}
+#else
+static inline unsigned long read_cr2(void)
+{
+    unsigned long cr2;
+
+    asm volatile ( "mov %%cr2,%0\n\t" : "=r" (cr2) );
+    return cr2;
+}
+#endif
 
 #endif /* not assembly */
 #endif /* _OS_H_ */

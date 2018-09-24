@@ -38,35 +38,36 @@
 #include <mini-os/hypervisor.h>
 #include <xen/memory.h>
 #include <mini-os/mm.h>
+#include <mini-os/balloon.h>
+#include <mini-os/paravirt.h>
 #include <mini-os/types.h>
 #include <mini-os/lib.h>
 #include <mini-os/xmalloc.h>
-
-#ifdef MM_DEBUG
-#define DEBUG(_f, _a...) \
-    printk("MINI_OS(file=mm.c, line=%d) " _f "\n", __LINE__, ## _a)
-#else
-#define DEBUG(_f, _a...)    ((void)0)
-#endif
+#include <mini-os/e820.h>
 
 /*********************
  * ALLOCATION BITMAP
  *  One bit per page of memory. Bit set => page is allocated.
  */
 
-static unsigned long *alloc_bitmap;
+unsigned long *mm_alloc_bitmap;
+unsigned long mm_alloc_bitmap_size;
+
 #define PAGES_PER_MAPWORD (sizeof(unsigned long) * 8)
 
 #define allocated_in_map(_pn) \
-(alloc_bitmap[(_pn)/PAGES_PER_MAPWORD] & (1UL<<((_pn)&(PAGES_PER_MAPWORD-1))))
+    (mm_alloc_bitmap[(_pn) / PAGES_PER_MAPWORD] & \
+     (1UL << ((_pn) & (PAGES_PER_MAPWORD - 1))))
+
+unsigned long nr_free_pages;
 
 /*
  * Hint regarding bitwise arithmetic in map_{alloc,free}:
  *  -(1<<n)  sets all bits >= n. 
  *  (1<<n)-1 sets all bits <  n.
  * Variable names in map_{alloc,free}:
- *  *_idx == Index into `alloc_bitmap' array.
- *  *_off == Bit offset within an element of the `alloc_bitmap' array.
+ *  *_idx == Index into `mm_alloc_bitmap' array.
+ *  *_off == Bit offset within an element of the `mm_alloc_bitmap' array.
  */
 
 static void map_alloc(unsigned long first_page, unsigned long nr_pages)
@@ -80,14 +81,16 @@ static void map_alloc(unsigned long first_page, unsigned long nr_pages)
 
     if ( curr_idx == end_idx )
     {
-        alloc_bitmap[curr_idx] |= ((1UL<<end_off)-1) & -(1UL<<start_off);
+        mm_alloc_bitmap[curr_idx] |= ((1UL<<end_off)-1) & -(1UL<<start_off);
     }
     else 
     {
-        alloc_bitmap[curr_idx] |= -(1UL<<start_off);
-        while ( ++curr_idx < end_idx ) alloc_bitmap[curr_idx] = ~0UL;
-        alloc_bitmap[curr_idx] |= (1UL<<end_off)-1;
+        mm_alloc_bitmap[curr_idx] |= -(1UL<<start_off);
+        while ( ++curr_idx < end_idx ) mm_alloc_bitmap[curr_idx] = ~0UL;
+        mm_alloc_bitmap[curr_idx] |= (1UL<<end_off)-1;
     }
+
+    nr_free_pages -= nr_pages;
 }
 
 
@@ -100,15 +103,17 @@ static void map_free(unsigned long first_page, unsigned long nr_pages)
     end_idx   = (first_page + nr_pages) / PAGES_PER_MAPWORD;
     end_off   = (first_page + nr_pages) & (PAGES_PER_MAPWORD-1);
 
+    nr_free_pages += nr_pages;
+
     if ( curr_idx == end_idx )
     {
-        alloc_bitmap[curr_idx] &= -(1UL<<end_off) | ((1UL<<start_off)-1);
+        mm_alloc_bitmap[curr_idx] &= -(1UL<<end_off) | ((1UL<<start_off)-1);
     }
     else 
     {
-        alloc_bitmap[curr_idx] &= (1UL<<start_off)-1;
-        while ( ++curr_idx != end_idx ) alloc_bitmap[curr_idx] = 0;
-        alloc_bitmap[curr_idx] &= -(1UL<<end_off);
+        mm_alloc_bitmap[curr_idx] &= (1UL<<start_off)-1;
+        while ( ++curr_idx != end_idx ) mm_alloc_bitmap[curr_idx] = 0;
+        mm_alloc_bitmap[curr_idx] &= -(1UL<<end_off);
     }
 }
 
@@ -137,72 +142,20 @@ static chunk_head_t *free_head[FREELIST_SIZE];
 static chunk_head_t  free_tail[FREELIST_SIZE];
 #define FREELIST_EMPTY(_l) ((_l)->next == NULL)
 
-#define round_pgdown(_p)  ((_p)&PAGE_MASK)
-#define round_pgup(_p)    (((_p)+(PAGE_SIZE-1))&PAGE_MASK)
-
-#ifdef MM_DEBUG
-/*
- * Prints allocation[0/1] for @nr_pages, starting at @start
- * address (virtual).
- */
-USED static void print_allocation(void *start, int nr_pages)
-{
-    unsigned long pfn_start = virt_to_pfn(start);
-    int count;
-    for(count = 0; count < nr_pages; count++)
-        if(allocated_in_map(pfn_start + count)) printk("1");
-        else printk("0");
-        
-    printk("\n");        
-}
-
-/*
- * Prints chunks (making them with letters) for @nr_pages starting
- * at @start (virtual).
- */
-USED static void print_chunks(void *start, int nr_pages)
-{
-    char chunks[1001], current='A';
-    int order, count;
-    chunk_head_t *head;
-    unsigned long pfn_start = virt_to_pfn(start);
-   
-    memset(chunks, (int)'_', 1000);
-    if(nr_pages > 1000) 
-    {
-        DEBUG("Can only pring 1000 pages. Increase buffer size.");
-    }
-    
-    for(order=0; order < FREELIST_SIZE; order++)
-    {
-        head = free_head[order];
-        while(!FREELIST_EMPTY(head))
-        {
-            for(count = 0; count < 1UL<< head->level; count++)
-            {
-                if(count + virt_to_pfn(head) - pfn_start < 1000)
-                    chunks[count + virt_to_pfn(head) - pfn_start] = current;
-            }
-            head = head->next;
-            current++;
-        }
-    }
-    chunks[nr_pages] = '\0';
-    printk("%s\n", chunks);
-}
-#endif
-
-
 /*
  * Initialise allocator, placing addresses [@min,@max] in free pool.
  * @min and @max are PHYSICAL addresses.
  */
 static void init_page_allocator(unsigned long min, unsigned long max)
 {
-    int i;
-    unsigned long range, bitmap_size;
+    int i, m;
+    unsigned long range;
+    unsigned long r_min, r_max;
     chunk_head_t *ch;
     chunk_tail_t *ct;
+
+    printk("MM: Initialise page allocator for %lx(%lx)-%lx(%lx)\n",
+           (u_long)to_virt(min), min, (u_long)to_virt(max), max);
     for ( i = 0; i < FREELIST_SIZE; i++ )
     {
         free_head[i]       = &free_tail[i];
@@ -214,43 +167,64 @@ static void init_page_allocator(unsigned long min, unsigned long max)
     max = round_pgdown(max);
 
     /* Allocate space for the allocation bitmap. */
-    bitmap_size  = (max+1) >> (PAGE_SHIFT+3);
-    bitmap_size  = round_pgup(bitmap_size);
-    alloc_bitmap = (unsigned long *)to_virt(min);
-    min         += bitmap_size;
-    range        = max - min;
+    mm_alloc_bitmap_size  = (max + 1) >> (PAGE_SHIFT + 3);
+    mm_alloc_bitmap_size  = round_pgup(mm_alloc_bitmap_size);
+    mm_alloc_bitmap = (unsigned long *)to_virt(min);
+    min         += mm_alloc_bitmap_size;
 
     /* All allocated by default. */
-    memset(alloc_bitmap, ~0, bitmap_size);
-    /* Free up the memory we've been given to play with. */
-    map_free(PHYS_PFN(min), range>>PAGE_SHIFT);
+    memset(mm_alloc_bitmap, ~0, mm_alloc_bitmap_size);
 
-    /* The buddy lists are addressed in high memory. */
-    min = (unsigned long) to_virt(min);
-    max = (unsigned long) to_virt(max);
-
-    while ( range != 0 )
+    for ( m = 0; m < e820_entries; m++ )
     {
-        /*
-         * Next chunk is limited by alignment of min, but also
-         * must not be bigger than remaining range.
-         */
-        for ( i = PAGE_SHIFT; (1UL<<(i+1)) <= range; i++ )
-            if ( min & (1UL<<i) ) break;
+        if ( e820_map[m].type != E820_RAM )
+            continue;
+        if ( e820_map[m].addr + e820_map[m].size >= ULONG_MAX )
+            BUG();
 
+        r_min = e820_map[m].addr;
+        r_max = r_min + e820_map[m].size;
+        if ( r_max <= min || r_min >= max )
+            continue;
+        if ( r_min < min )
+            r_min = min;
+        if ( r_max > max )
+            r_max = max;
 
-        ch = (chunk_head_t *)min;
-        min   += (1UL<<i);
-        range -= (1UL<<i);
-        ct = (chunk_tail_t *)min-1;
-        i -= PAGE_SHIFT;
-        ch->level       = i;
-        ch->next        = free_head[i];
-        ch->pprev       = &free_head[i];
-        ch->next->pprev = &ch->next;
-        free_head[i]    = ch;
-        ct->level       = i;
+        printk("    Adding memory range %lx-%lx\n", r_min, r_max);
+
+        /* The buddy lists are addressed in high memory. */
+        r_min = (unsigned long)to_virt(r_min);
+        r_max = (unsigned long)to_virt(r_max);
+        range = r_max - r_min;
+
+        /* Free up the memory we've been given to play with. */
+        map_free(PHYS_PFN(r_min), range >> PAGE_SHIFT);
+
+        while ( range != 0 )
+        {
+            /*
+             * Next chunk is limited by alignment of min, but also
+             * must not be bigger than remaining range.
+             */
+            for ( i = PAGE_SHIFT; (1UL << (i + 1)) <= range; i++ )
+                if ( r_min & (1UL << i) ) break;
+
+            ch = (chunk_head_t *)r_min;
+            r_min += 1UL << i;
+            range -= 1UL << i;
+            ct = (chunk_tail_t *)r_min - 1;
+            i -= PAGE_SHIFT;
+            ch->level       = i;
+            ch->next        = free_head[i];
+            ch->pprev       = &free_head[i];
+            ch->next->pprev = &ch->next;
+            free_head[i]    = ch;
+            ct->level       = i;
+        }
     }
+
+    mm_alloc_bitmap_remap();
 }
 
 
@@ -261,6 +235,8 @@ unsigned long alloc_pages(int order)
     chunk_head_t *alloc_ch, *spare_ch;
     chunk_tail_t            *spare_ct;
 
+    if ( !chk_free_pages(1UL << order) )
+        goto no_memory;
 
     /* Find smallest order which can satisfy the request. */
     for ( i = order; i < FREELIST_SIZE; i++ ) {
@@ -372,6 +348,11 @@ int free_physical_pages(xen_pfn_t *mfns, int n)
     return HYPERVISOR_memory_op(XENMEM_decrease_reservation, &reservation);
 }
 
+int map_frame_rw(unsigned long addr, unsigned long mfn)
+{
+    return do_map_frames(addr, &mfn, 1, 1, 1, DOMID_SELF, NULL, L1_PROT);
+}
+
 #ifdef HAVE_LIBC
 void *sbrk(ptrdiff_t increment)
 {
@@ -389,6 +370,13 @@ void *sbrk(ptrdiff_t increment)
     
     if (new_brk > heap_mapped) {
         unsigned long n = (new_brk - heap_mapped + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        if ( !chk_free_pages(n) )
+        {
+            printk("Memory exhausted: want %ld pages, but only %ld are left\n",
+                   n, nr_free_pages);
+            return NULL;
+        }
         do_map_zero(heap_mapped, n);
         heap_mapped += n * PAGE_SIZE;
     }
@@ -408,19 +396,21 @@ void init_mm(void)
 
     printk("MM: Init\n");
 
+    get_max_pages();
     arch_init_mm(&start_pfn, &max_pfn);
     /*
      * now we can initialise the page allocator
      */
-    printk("MM: Initialise page allocator for %lx(%lx)-%lx(%lx)\n",
-           (u_long)to_virt(PFN_PHYS(start_pfn)), (u_long)PFN_PHYS(start_pfn),
-           (u_long)to_virt(PFN_PHYS(max_pfn)), (u_long)PFN_PHYS(max_pfn));
     init_page_allocator(PFN_PHYS(start_pfn), PFN_PHYS(max_pfn));
     printk("MM: done\n");
 
     arch_init_p2m(max_pfn);
     
-    arch_init_demand_mapping_area(max_pfn);
+    arch_init_demand_mapping_area();
+
+#ifdef CONFIG_BALLOON
+    nr_mem_pages = max_pfn;
+#endif
 }
 
 void fini_mm(void)

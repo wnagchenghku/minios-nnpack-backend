@@ -10,7 +10,6 @@ DEF_CFLAGS += -fno-builtin -Wall -Wredundant-decls -Wno-format -Wno-redundant-de
 DEF_CFLAGS += $(call cc-option,$(CC),-fno-stack-protector,)
 DEF_CFLAGS += $(call cc-option,$(CC),-fgnu89-inline)
 DEF_CFLAGS += -Wstrict-prototypes -Wnested-externs -Wpointer-arith -Winline
-DEF_CPPFLAGS += -D__XEN_INTERFACE_VERSION__=$(XEN_INTERFACE_VERSION)
 
 DEF_ASFLAGS += -D__ASSEMBLY__
 DEF_LDFLAGS +=
@@ -32,9 +31,9 @@ DEF_CFLAGS += -D__INSIDE_MINIOS__
 # Build the CFLAGS and ASFLAGS for compiling and assembling.
 # DEF_... flags are the common mini-os flags,
 # ARCH_... flags may be defined in arch/$(TARGET_ARCH_FAM/rules.mk
-CFLAGS := $(DEF_CFLAGS) $(ARCH_CFLAGS)
+CFLAGS := $(DEF_CFLAGS) $(ARCH_CFLAGS) $(DEFINES-y)
 CPPFLAGS := $(DEF_CPPFLAGS) $(ARCH_CPPFLAGS)
-ASFLAGS := $(DEF_ASFLAGS) $(ARCH_ASFLAGS)
+ASFLAGS := $(DEF_ASFLAGS) $(ARCH_ASFLAGS) $(DEFINES-y)
 LDFLAGS := $(DEF_LDFLAGS) $(ARCH_LDFLAGS)
 
 # Special build dependencies.
@@ -68,7 +67,7 @@ HEAD_OBJ := $(OBJ_DIR)/$(TARGET_ARCH_DIR)/$(HEAD_ARCH_OBJ)
 $(OBJ_DIR)/%.o: %.c $(HDRS) Makefile $(EXTRA_DEPS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/%.o: %.S $(HDRS) Makefile $(EXTRA_DEPS)
+$(OBJ_DIR)/%.o: %.S $(HDRS) Makefile $(EXTRA_DEPS) $(ARCH_AS_DEPS)
 	$(CC) $(ASFLAGS) $(CPPFLAGS) -c $< -o $@
 
 

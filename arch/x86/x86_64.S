@@ -1,22 +1,29 @@
 #include <mini-os/os.h>
 #include <mini-os/x86/arch_limits.h>
+#include <mini-os/asm_macros.h>
+#include <mini-os/arch_mm.h>
+#include <mini-os/desc.h>
+#include <xen/features.h>
+#include <xen/elfnote.h>
 #include <xen/features.h>
 
-.section __xen_guest
-	.ascii	"GUEST_OS=Mini-OS"
-	.ascii	",XEN_VER=xen-3.0"
-	.ascii	",VIRT_BASE=0x0" /* &_text from minios_x86_64.lds */
-	.ascii	",ELF_PADDR_OFFSET=0x0"
-	.ascii	",HYPERCALL_PAGE=0x2"
-	.ascii	",LOADER=generic"
-	.byte	0
+#define ENTRY(X) .globl X ; X :
+
+#ifdef CONFIG_PARAVIRT
+ELFNOTE(Xen, XEN_ELFNOTE_GUEST_OS, .asciz "Mini-OS")
+ELFNOTE(Xen, XEN_ELFNOTE_LOADER, .asciz "generic")
+ELFNOTE(Xen, XEN_ELFNOTE_HYPERCALL_PAGE, _WORD hypercall_page)
+ELFNOTE(Xen, XEN_ELFNOTE_XEN_VERSION, .asciz "xen-3.0")
 .text
 
-#define ENTRY(X) .globl X ; X :
-.globl _start, shared_info, hypercall_page
-
+.globl _start
 
 _start:
+#else
+
+#include "x86_hvm.S"
+
+#endif
         cld
         movq stack_start(%rip),%rsp
         andq $(~(__STACK_SIZE-1)), %rsp
@@ -26,31 +33,21 @@ _start:
 stack_start:
         .quad stack+(2*__STACK_SIZE)
 
+.globl shared_info, hypercall_page
         /* Unpleasant -- the PTE that maps this page is actually overwritten */
         /* to map the real shared-info page! :-)                             */
-        .org 0x1000
+        .align __PAGE_SIZE
 shared_info:
-        .org 0x2000
+        .fill __PAGE_SIZE,1,0
 
 hypercall_page:
-        .org 0x3000
+        .fill __PAGE_SIZE,1,0
 
 
 #define XEN_GET_VCPU_INFO(reg)	movq HYPERVISOR_shared_info,reg
-#define XEN_PUT_VCPU_INFO(reg)
-#define XEN_PUT_VCPU_INFO_fixup
 #define XEN_LOCKED_BLOCK_EVENTS(reg)	movb $1,evtchn_upcall_mask(reg)
 #define XEN_LOCKED_UNBLOCK_EVENTS(reg)	movb $0,evtchn_upcall_mask(reg)
 #define XEN_TEST_PENDING(reg)	testb $0xFF,evtchn_upcall_pending(reg)
-
-#define XEN_BLOCK_EVENTS(reg)	XEN_GET_VCPU_INFO(reg)			; \
-                    			XEN_LOCKED_BLOCK_EVENTS(reg)	; \
-    				            XEN_PUT_VCPU_INFO(reg)
-
-#define XEN_UNBLOCK_EVENTS(reg)	XEN_GET_VCPU_INFO(reg)			; \
-                				XEN_LOCKED_UNBLOCK_EVENTS(reg)	; \
-    			            	XEN_PUT_VCPU_INFO(reg)
-
 
 /* Offsets into shared_info_t. */                
 #define evtchn_upcall_pending		/* 0 */
@@ -69,10 +66,15 @@ KERNEL_CS_MASK = 0xfc
 
 
 /* Macros */
+.macro SAVE_PARAVIRT
+#ifdef CONFIG_PARAVIRT
+	pop %rcx
+	pop %r11 /* rsp points to the error code */
+#endif
+.endm
+
 .macro zeroentry sym
-	movq (%rsp),%rcx
-	movq 8(%rsp),%r11
-	addq $0x10,%rsp /* skip rcx and r11 */
+	SAVE_PARAVIRT
 	pushq $0	/* push error code/oldrax */
 	pushq %rax	/* push real oldrax to the rdi slot */
 	leaq  \sym(%rip),%rax
@@ -80,60 +82,70 @@ KERNEL_CS_MASK = 0xfc
 .endm
 
 .macro errorentry sym
-	movq (%rsp),%rcx
-	movq 8(%rsp),%r11
-	addq $0x10,%rsp /* rsp points to the error code */
+	SAVE_PARAVIRT
 	pushq %rax
 	leaq  \sym(%rip),%rax
 	jmp error_entry
 .endm
 
 .macro RESTORE_ALL
-	movq (%rsp),%r11
-	movq 1*8(%rsp),%r10
-	movq 2*8(%rsp),%r9
-	movq 3*8(%rsp),%r8
-	movq 4*8(%rsp),%rax
-	movq 5*8(%rsp),%rcx
-	movq 6*8(%rsp),%rdx
-	movq 7*8(%rsp),%rsi
-	movq 8*8(%rsp),%rdi
-	addq $9*8+8,%rsp
-.endm	
-
-.macro RESTORE_REST
 	movq (%rsp),%r15
 	movq 1*8(%rsp),%r14
 	movq 2*8(%rsp),%r13
 	movq 3*8(%rsp),%r12
 	movq 4*8(%rsp),%rbp
 	movq 5*8(%rsp),%rbx
-	addq $6*8,%rsp
-.endm
+	movq 6*8(%rsp),%r11
+	movq 7*8(%rsp),%r10
+	movq 8*8(%rsp),%r9
+	movq 9*8(%rsp),%r8
+	movq 10*8(%rsp),%rax
+	movq 11*8(%rsp),%rcx
+	movq 12*8(%rsp),%rdx
+	movq 13*8(%rsp),%rsi
+	movq 14*8(%rsp),%rdi
+	addq $15*8+8,%rsp
+.endm	
 
-.macro SAVE_REST
-	subq $6*8,%rsp
+.macro SAVE_ALL
+	/* rdi slot contains rax, oldrax contains error code */
+	cld
+	subq $14*8,%rsp
+	movq %rsi,13*8(%rsp)
+	movq 14*8(%rsp),%rsi	/* load rax from rdi slot */
+	movq %rdx,12*8(%rsp)
+	movq %rcx,11*8(%rsp)
+	movq %rsi,10*8(%rsp)	/* store rax */
+	movq %r8, 9*8(%rsp)
+	movq %r9, 8*8(%rsp)
+	movq %r10,7*8(%rsp)
+	movq %r11,6*8(%rsp)
 	movq %rbx,5*8(%rsp)
 	movq %rbp,4*8(%rsp)
 	movq %r12,3*8(%rsp)
 	movq %r13,2*8(%rsp)
 	movq %r14,1*8(%rsp)
 	movq %r15,(%rsp)
+	movq %rdi, RDI(%rsp)	/* put rdi into the slot */
 .endm
 
-.macro HYPERVISOR_IRET flag
+.macro HYPERVISOR_IRET
+#ifdef CONFIG_PARAVIRT
 	testl $NMI_MASK,2*8(%rsp)
 	jnz   2f
 
 	/* Direct iret to kernel space. Correct CS and SS. */
 	orb   $3,1*8(%rsp)
 	orb   $3,4*8(%rsp)
+#endif
 	iretq
 
+#ifdef CONFIG_PARAVIRT
 2:	/* Slow iret via hypervisor. */
 	andl  $~NMI_MASK, 16(%rsp)
-	pushq $\flag
+	pushq $0
 	jmp  hypercall_page + (__HYPERVISOR_iret * 32)
+#endif
 .endm
 
 
@@ -141,28 +153,9 @@ KERNEL_CS_MASK = 0xfc
  * Exception entry point. This expects an error code/orig_rax on the stack
  * and the exception handler in %rax.	
  */ 		  				
-ENTRY(error_entry)
-	/* rdi slot contains rax, oldrax contains error code */
-	cld	
-	subq  $14*8,%rsp
-	movq %rsi,13*8(%rsp)
-	movq 14*8(%rsp),%rsi	/* load rax from rdi slot */
-	movq %rdx,12*8(%rsp)
-	movq %rcx,11*8(%rsp)
-	movq %rsi,10*8(%rsp)	/* store rax */ 
-	movq %r8, 9*8(%rsp)
-	movq %r9, 8*8(%rsp)
-	movq %r10,7*8(%rsp)
-	movq %r11,6*8(%rsp)
-	movq %rbx,5*8(%rsp) 
-	movq %rbp,4*8(%rsp) 
-	movq %r12,3*8(%rsp) 
-	movq %r13,2*8(%rsp) 
-	movq %r14,1*8(%rsp) 
-	movq %r15,(%rsp) 
+error_entry:
+	SAVE_ALL
 
-error_call_handler:
-	movq %rdi, RDI(%rsp)
 	movq %rsp,%rdi
 	movq ORIG_RAX(%rsp),%rsi	# get error code 
 	movq $-1,ORIG_RAX(%rsp)
@@ -170,13 +163,14 @@ error_call_handler:
 	jmp error_exit
 
 
+#ifdef CONFIG_PARAVIRT
 /*
  * Xen event (virtual interrupt) entry point.
  */
 ENTRY(hypervisor_callback)
 	zeroentry hypervisor_callback2
 
-ENTRY(hypervisor_callback2)
+hypervisor_callback2:
 	movq %rdi, %rsp
 
 	/* check against event re-entrant */
@@ -195,27 +189,22 @@ ENTRY(hypervisor_callback2)
 	decl %gs:0
 
 error_exit:
-retint_kernel:
 	movl RFLAGS(%rsp), %eax
 	shr $9, %eax			# EAX[0] == IRET_RFLAGS.IF
 	XEN_GET_VCPU_INFO(%rsi)
 	andb evtchn_upcall_mask(%rsi),%al
 	andb $1,%al			# EAX[0] == IRET_RFLAGS.IF & event_mask
 	jnz restore_all_enable_events	#        != 0 => enable event delivery
-	XEN_PUT_VCPU_INFO(%rsi)
 
-retint_restore_args:
-	RESTORE_REST
 	RESTORE_ALL
-	HYPERVISOR_IRET 0
+	HYPERVISOR_IRET
 
 restore_all_enable_events:
-	RESTORE_REST
 	RESTORE_ALL
 	pushq %rax                      # save rax for it will be clobbered later
 	RSP_OFFSET=8                    # record the stack frame layout changes
 	XEN_GET_VCPU_INFO(%rax)         # safe to use rax since it is saved
-	XEN_UNBLOCK_EVENTS(%rax)
+	XEN_LOCKED_UNBLOCK_EVENTS(%rax)
 
 scrit:	/**** START OF CRITICAL REGION ****/
 	XEN_TEST_PENDING(%rax)
@@ -227,7 +216,7 @@ scrit:	/**** START OF CRITICAL REGION ****/
 restore_end:
 	jnz hypervisor_prologue         # safe to jump out of critical region
 	                                # because events are masked if ZF = 0
-	HYPERVISOR_IRET 0
+	HYPERVISOR_IRET
 ecrit:  /**** END OF CRITICAL REGION ****/
 
 # Set up the stack as Xen does before calling event callback
@@ -273,11 +262,25 @@ critical_region_fixup:
 	andb $KERNEL_CS_MASK,CS(%rsp)      # CS might have changed
 	jmp  11b
 
+#else
+error_exit:
+	RESTORE_ALL
+	HYPERVISOR_IRET
 
+/*
+ * Xen event (virtual interrupt) entry point.
+ */
+ENTRY(hypervisor_callback)
+	zeroentry do_hypervisor_callback
+
+
+#endif
 
 ENTRY(failsafe_callback)
+#ifdef CONFIG_PARAVIRT
         popq  %rcx
         popq  %r11
+#endif
         iretq
 
 
@@ -381,3 +384,22 @@ ENTRY(__arch_switch_threads)
 	popq %rbx
 	popq %rbp
 	ret
+
+#ifndef CONFIG_PARAVIRT
+.data
+.globl page_table_base
+        .align __PAGE_SIZE
+page_table_virt_l2:
+        PTE(page_table_virt_l1 + L2_PROT)
+        .align __PAGE_SIZE, 0
+page_table_virt_l3:
+        PTE(page_table_virt_l2 + L3_PROT)
+        .align __PAGE_SIZE, 0
+page_table_l3:
+        PTE(page_table_l2 + L3_PROT)
+        .align __PAGE_SIZE, 0
+page_table_base:
+        PTE(page_table_l3 + L4_PROT)
+        PTE(page_table_virt_l3 + L4_PROT)
+        .align __PAGE_SIZE, 0
+#endif

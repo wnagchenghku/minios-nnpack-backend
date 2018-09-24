@@ -36,12 +36,20 @@
 #endif
 #include <xen/xen.h>
 
+#include <mini-os/paravirt.h>
 #include <mini-os/arch_limits.h>
 #include <mini-os/arch_mm.h>
 
 #define STACK_SIZE_PAGE_ORDER __STACK_SIZE_PAGE_ORDER
 #define STACK_SIZE __STACK_SIZE
 
+#define round_pgdown(_p)  ((_p) & PAGE_MASK)
+#define round_pgup(_p)    (((_p) + (PAGE_SIZE - 1)) & PAGE_MASK)
+
+extern unsigned long nr_free_pages;
+
+extern unsigned long *mm_alloc_bitmap;
+extern unsigned long mm_alloc_bitmap_size;
 
 void init_mm(void);
 unsigned long alloc_pages(int order);
@@ -58,20 +66,20 @@ static __inline__ int get_order(unsigned long size)
     return order;
 }
 
-void arch_init_demand_mapping_area(unsigned long max_pfn);
+void arch_init_demand_mapping_area(void);
 void arch_init_mm(unsigned long* start_pfn_p, unsigned long* max_pfn_p);
-void arch_init_p2m(unsigned long max_pfn_p);
 
 unsigned long allocate_ondemand(unsigned long n, unsigned long alignment);
 /* map f[i*stride]+i*increment for i in 0..n-1, aligned on alignment pages */
 void *map_frames_ex(const unsigned long *f, unsigned long n, unsigned long stride,
 	unsigned long increment, unsigned long alignment, domid_t id,
 	int *err, unsigned long prot);
-void do_map_frames(unsigned long addr,
+int do_map_frames(unsigned long addr,
         const unsigned long *f, unsigned long n, unsigned long stride,
 	unsigned long increment, domid_t id, int *err, unsigned long prot);
 int unmap_frames(unsigned long va, unsigned long num_frames);
-unsigned long alloc_contig_pages(int order, unsigned int addr_bits);
+int map_frame_rw(unsigned long addr, unsigned long mfn);
+unsigned long map_frame_virt(unsigned long mfn);
 #ifdef HAVE_LIBC
 extern unsigned long heap, brk, heap_mapped, heap_end;
 #endif

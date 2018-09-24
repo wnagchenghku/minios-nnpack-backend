@@ -7,10 +7,18 @@ typedef unsigned long xenbus_transaction_t;
 #define XBT_NIL ((xenbus_transaction_t)0)
 
 #ifdef CONFIG_XENBUS
+extern uint32_t xenbus_evtchn;
+
 /* Initialize the XenBus system. */
 void init_xenbus(void);
+void get_xenbus(void *p);
 #else
+#define xenbus_evtchn ~0
+
 static inline void init_xenbus(void)
+{
+}
+static inline void get_xenbus(void *p)
 {
 }
 #endif

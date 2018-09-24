@@ -1,10 +1,12 @@
 
 #include <mini-os/os.h>
 #include <mini-os/traps.h>
+#include <mini-os/desc.h>
 #include <mini-os/hypervisor.h>
 #include <mini-os/mm.h>
 #include <mini-os/lib.h>
 #include <mini-os/sched.h>
+#include <xen/hvm/params.h>
 
 /*
  * These are assembler stubs in entry.S.
@@ -32,7 +34,7 @@ void machine_check(void);
 
 void dump_regs(struct pt_regs *regs)
 {
-    printk("Thread: %s\n", current->name);
+    printk("Thread: %s\n", current ? current->name : "*NONE*");
 #ifdef __i386__    
     printk("EIP: %lx, EFLAGS %lx.\n", regs->eip, regs->eflags);
     printk("EBX: %08lx ECX: %08lx EDX: %08lx\n",
@@ -95,9 +97,9 @@ DO_ERROR(18, "machine check", machine_check)
 
 void page_walk(unsigned long virt_address)
 {
-        pgentry_t *tab = (pgentry_t *)start_info.pt_base, page;
+        pgentry_t *tab = pt_base, page;
         unsigned long addr = virt_address;
-        printk("Pagetable walk from virt %lx, base %lx:\n", virt_address, start_info.pt_base);
+        printk("Pagetable walk from virt %lx, base %p:\n", virt_address, pt_base);
     
 #if defined(__x86_64__)
         page = tab[l4_table_offset(addr)];
@@ -117,9 +119,11 @@ void page_walk(unsigned long virt_address)
 }
 
 static int handle_cow(unsigned long addr) {
-        pgentry_t *tab = (pgentry_t *)start_info.pt_base, page;
+        pgentry_t *tab = pt_base, page;
 	unsigned long new_page;
+#ifdef CONFIG_PARAVIRT
 	int rc;
+#endif
 
 #if defined(__x86_64__)
         page = tab[l4_table_offset(addr)];
@@ -135,6 +139,8 @@ static int handle_cow(unsigned long addr) {
         page = tab[l2_table_offset(addr)];
 	if (!(page & _PAGE_PRESENT))
 	    return 0;
+	if ( page & _PAGE_PSE )
+	    return 0;
         tab = pte_to_virt(page);
         
         page = tab[l1_table_offset(addr)];
@@ -147,12 +153,18 @@ static int handle_cow(unsigned long addr) {
 	new_page = alloc_pages(0);
 	memset((void*) new_page, 0, PAGE_SIZE);
 
+#ifdef CONFIG_PARAVIRT
 	rc = HYPERVISOR_update_va_mapping(addr & PAGE_MASK, __pte(virt_to_mach(new_page) | L1_PROT), UVMF_INVLPG);
 	if (!rc)
 		return 1;
 
 	printk("Map zero page to %lx failed: %d.\n", addr, rc);
 	return 0;
+#else
+	tab[l1_table_offset(addr)] = virt_to_mach(new_page) | L1_PROT;
+	invlpg(addr);
+	return 1;
+#endif
 }
 
 static void do_stack_walk(unsigned long frame_base)
@@ -189,8 +201,6 @@ static void dump_mem(unsigned long addr)
     }
     printk("\n");
 }
-#define read_cr2() \
-        (HYPERVISOR_shared_info->vcpu_info[smp_processor_id()].arch.cr2)
 
 static int handling_pg_fault = 0;
 
@@ -293,6 +303,11 @@ void do_spurious_interrupt_bug(struct pt_regs * regs)
 {
 }
 
+/* Assembler interface fns in entry.S. */
+void hypervisor_callback(void);
+void failsafe_callback(void);
+
+#ifdef CONFIG_PARAVIRT
 /*
  * Submit a virtual IDT to teh hypervisor. This consists of tuples
  * (interrupt vector, privilege ring, CS:EIP of handler).
@@ -325,9 +340,90 @@ static trap_info_t trap_table[] = {
 void trap_init(void)
 {
     HYPERVISOR_set_trap_table(trap_table);    
+
+#ifdef __i386__
+    HYPERVISOR_set_callbacks(
+        __KERNEL_CS, (unsigned long)hypervisor_callback,
+        __KERNEL_CS, (unsigned long)failsafe_callback);
+#else
+    HYPERVISOR_set_callbacks(
+        (unsigned long)hypervisor_callback,
+        (unsigned long)failsafe_callback, 0);
+#endif
 }
 
 void trap_fini(void)
 {
     HYPERVISOR_set_trap_table(NULL);
 }
+#else
+
+#define INTR_STACK_SIZE PAGE_SIZE
+static uint8_t intr_stack[INTR_STACK_SIZE] __attribute__((aligned(16)));
+
+hw_tss tss __attribute__((aligned(16))) =
+{
+#if defined(__i386__)
+    .esp0 = (unsigned long)&intr_stack[INTR_STACK_SIZE],
+    .ss0  = __KERN_DS,
+#elif defined(__x86_64__)
+    .rsp0 = (unsigned long)&intr_stack[INTR_STACK_SIZE],
+#endif
+    .iopb = X86_TSS_INVALID_IO_BITMAP,
+};
+
+static void setup_gate(unsigned int entry, void *addr, unsigned int dpl)
+{
+    idt[entry].offset0 = (unsigned long)addr & 0xffff;
+    idt[entry].selector = __KERN_CS;
+    idt[entry]._r0 = 0;
+    idt[entry].type = 14;
+    idt[entry].s = 0;
+    idt[entry].dpl = dpl;
+    idt[entry].p = 1;
+    idt[entry].offset1 = ((unsigned long)addr >> 16) & 0xffff;
+#if defined(__x86_64__)
+    idt[entry].ist = 0;
+    idt[entry].offset2 = ((unsigned long)addr >> 32) & 0xffffffffu;
+    idt[entry]._r1 = 0;
+#endif
+}
+
+void trap_init(void)
+{
+    setup_gate(TRAP_divide_error, &divide_error, 0);
+    setup_gate(TRAP_debug, &debug, 0);
+    setup_gate(TRAP_int3, &int3, 3);
+    setup_gate(TRAP_overflow, &overflow, 3);
+    setup_gate(TRAP_bounds, &bounds, 0);
+    setup_gate(TRAP_invalid_op, &invalid_op, 0);
+    setup_gate(TRAP_no_device, &device_not_available, 0);
+    setup_gate(TRAP_copro_seg, &coprocessor_segment_overrun, 0);
+    setup_gate(TRAP_invalid_tss, &invalid_TSS, 0);
+    setup_gate(TRAP_no_segment, &segment_not_present, 0);
+    setup_gate(TRAP_stack_error, &stack_segment, 0);
+    setup_gate(TRAP_gp_fault, &general_protection, 0);
+    setup_gate(TRAP_page_fault, &page_fault, 0);
+    setup_gate(TRAP_spurious_int, &spurious_interrupt_bug, 0);
+    setup_gate(TRAP_copro_error, &coprocessor_error, 0);
+    setup_gate(TRAP_alignment_check, &alignment_check, 0);
+    setup_gate(TRAP_simd_error, &simd_coprocessor_error, 0);
+    setup_gate(TRAP_xen_callback, hypervisor_callback, 0);
+
+    asm volatile ("lidt idt_ptr");
+
+    gdt[GDTE_TSS] = (typeof(*gdt))INIT_GDTE((unsigned long)&tss, 0x67, 0x89);
+    asm volatile ("ltr %w0" :: "rm" (GDTE_TSS * 8));
+
+    if ( hvm_set_parameter(HVM_PARAM_CALLBACK_IRQ,
+                           (2ULL << 56) | TRAP_xen_callback) )
+    {
+        xprintk("Request for Xen HVM callback vector failed\n");
+        do_exit();
+    }
+}
+
+void trap_fini(void)
+{
+}
+#endif
