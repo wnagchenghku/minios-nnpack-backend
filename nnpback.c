@@ -19,6 +19,7 @@
 #include <mini-os/2D24C20E_backend.h> // resnet18
 #include <mini-os/264993A3_backend.h> // alexnet
 #include <mini-os/C37828B0_backend.h> // densenet121
+#include <mini-os/6614F490_backend.h> // vgg11
 
 #define NNPBACK_PRINT_DEBUG
 #ifdef NNPBACK_PRINT_DEBUG
@@ -117,6 +118,7 @@ static float *squeezenet1_0_page = NULL;
 static float *resnet18_page = NULL;
 static float *alexnet_page = NULL;
 static float *densenet121_page = NULL;
+static float *vgg11_page = NULL;
 
 void handle_backend_event(char* evstr) {
    domid_t domid;
@@ -162,7 +164,11 @@ void handle_backend_event(char* evstr) {
          total_item = sizeof(PC37828B0_backend) / sizeof(struct backend_param);
          for (i = 0; i < total_item; ++i)
             total_bytes += PC37828B0_backend[i].param_size * sizeof(float);
-      }
+      } else if (strcmp("vgg11", model) == 0) {
+         total_item = sizeof(P6614F490_backend) / sizeof(struct backend_param);
+         for (i = 0; i < total_item; ++i)
+            total_bytes += P6614F490_backend[i].param_size * sizeof(float);
+      } 
 
       total_page = divide_round_up(total_bytes, PAGE_SIZE);
 
@@ -202,6 +208,15 @@ void handle_backend_event(char* evstr) {
                   *(densenet121_page + k++) = *(PC37828B0_backend[i].param_ptr + j);
          }
          page = (void*)densenet121_page;
+      } else if (strcmp("vgg11", model) == 0) {
+         if (vgg11_page == NULL) {
+            vgg11_page = (float*)alloc_pages(log2(round_up_power_of_two(total_page)));
+
+            for (i = 0; i < total_item; ++i)
+               for (j = 0; j < P6614F490_backend[i].param_size; ++j)
+                  *(vgg11_page + k++) = *(P6614F490_backend[i].param_ptr + j);
+         }
+         page = (void*)vgg11_page;
       }
 
       grant_ref = (grant_ref_t*)malloc(sizeof(grant_ref_t) * total_page);
