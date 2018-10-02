@@ -220,7 +220,7 @@ void handle_backend_event(char* evstr) {
       }
 
       for (i = 0; i < total_page - 1; ++i)
-      	*(float*)((unsigned long)page + i * PAGE_SIZE) = 12.35 + i;
+      	*(float*)((unsigned long)page + i * PAGE_SIZE) = 0.02 + i;
 
       grant_ref = (grant_ref_t*)malloc(sizeof(grant_ref_t) * total_page);
 
