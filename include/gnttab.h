@@ -4,6 +4,7 @@
 #include <xen/grant_table.h>
 
 void init_gnttab(void);
+int gnttab_reset_model(void);
 grant_ref_t gnttab_alloc_and_grant(void **map);
 grant_ref_t gnttab_grant_access(domid_t domid, unsigned long frame,
 				int readonly);

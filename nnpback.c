@@ -324,6 +324,8 @@ void init_nnpback(void)
 
    printk("============= Init NNP BACK ================\n");
 
+   gnttab_reset_model();
+   
    snprintf(value, 16, "%d", xenbus_get_self_id());
    if ((err = xenbus_write(XBT_NIL, "/local/domain/backend", value)))
    {

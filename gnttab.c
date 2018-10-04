@@ -169,6 +169,14 @@ gnttabop_error(int16_t status)
         return gnttabop_error_msgs[status];
 }
 
+int
+gnttab_reset_model(void)
+{
+    int rc;
+    rc = HYPERVISOR_grant_table_op(GNTTABOP_setup_model, NULL, 0);
+    return rc;
+}
+
 void
 init_gnttab(void)
 {
