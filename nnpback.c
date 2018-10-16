@@ -226,9 +226,7 @@ void handle_backend_event(char* evstr) {
          grant_ref[i] = gnttab_grant_access(domid, virt_to_mfn((uintptr_t)page + i * PAGE_SIZE), 0);
       }
       gettimeofday(&end, 0);
-      e_usec = ((end.tv_sec * 1000000) + end.tv_usec) - ((start.tv_sec * 1000000) + start.tv_usec);
-      NNPBACK_LOG("Publishing grant references takes %lu microseconds\n", e_usec);
-
+      
       total_grant_ref_ref_page = divide_round_up(total_page * sizeof(grant_ref_t), PAGE_SIZE);
       grant_ref_ref = (grant_ref_t*)malloc(sizeof(grant_ref_t) * total_grant_ref_ref_page);
       grant_ref_ref_page = (grant_ref_t*)alloc_pages(log2(round_up_power_of_two(total_grant_ref_ref_page)));
@@ -266,6 +264,8 @@ void handle_backend_event(char* evstr) {
       name->total_page = total_page;
       name->total_grant_ref_ref_page = total_grant_ref_ref_page;
       DL_APPEND(head, name);
+      e_usec = ((end.tv_sec * 1000000) + end.tv_usec) - ((start.tv_sec * 1000000) + start.tv_usec);
+      NNPBACK_LOG("Publishing grant references takes %lu microseconds\n", e_usec);
    } else if (event == EV_CLOSEFE) {
       etmp.domid = domid;
       DL_SEARCH(head, elt, &etmp, namecmp);
