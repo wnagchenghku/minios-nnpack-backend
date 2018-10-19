@@ -138,6 +138,7 @@ void handle_backend_event(char* evstr) {
 
    NNPBACK_DEBUG("Xenbus Event: %s\n", evstr);
 
+   gettimeofday(&start, 0);
    event = parse_eventstr(evstr, &domid, model);
    
    if (event == EV_NEWFE) {
@@ -221,11 +222,9 @@ void handle_backend_event(char* evstr) {
 
       grant_ref = (grant_ref_t*)malloc(sizeof(grant_ref_t) * total_page);
 
-      gettimeofday(&start, 0);
       for (i = 0; i < total_page; ++i) {
          grant_ref[i] = gnttab_grant_access(domid, virt_to_mfn((uintptr_t)page + i * PAGE_SIZE), 0);
       }
-      gettimeofday(&end, 0);
       
       total_grant_ref_ref_page = divide_round_up(total_page * sizeof(grant_ref_t), PAGE_SIZE);
       grant_ref_ref = (grant_ref_t*)malloc(sizeof(grant_ref_t) * total_grant_ref_ref_page);
@@ -256,6 +255,7 @@ void handle_backend_event(char* evstr) {
           NNPBACK_ERR("Unable to write state path, error was %s\n", err);
           free(err);
       }
+      gettimeofday(&end, 0);
 
       name = (el *)malloc(sizeof *name);
       name->domid = domid;
